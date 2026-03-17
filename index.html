@@ -1,0 +1,840 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#1A6B5A" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="TME" />
+  <meta name="description" content="Shift tracker by Vysakh — tasks, sales, rota & more" />
+
+  <link rel="manifest" href="./manifest.json" />
+  <link rel="apple-touch-icon" href="./icon-192.png" />
+  <link rel="icon" href="./icon-192.png" />
+
+  <title>Tracker Made Easy</title>
+
+  <!-- Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@700;800;900&family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600;9..40,700;9..40,800&family=JetBrains+Mono:wght@500;600;700&display=swap" rel="stylesheet" />
+
+  <!-- React + Babel -->
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+    html, body, #root { height: 100%; overflow: hidden; }
+    body { background: #F5F2ED; }
+    input, button, select, textarea { font-family: 'DM Sans', sans-serif; -webkit-appearance: none; border: none; outline: none; }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+
+  <script type="text/babel">
+    const { useState, useEffect, useCallback, useRef } = React;
+
+    // ── localStorage Storage (PWA) ──
+    const SK = k => "tme3-" + k;
+    async function sGet(k) {
+      try { const v = localStorage.getItem(SK(k)); return v ? JSON.parse(v) : null; } catch { return null; }
+    }
+    async function sSet(k, v) {
+      try { localStorage.setItem(SK(k), JSON.stringify(v)); } catch {}
+    }
+
+    // ── Constants ──
+    const DEF_CFG = { name: "VYSAKH", hours: 8, target: 20000 };
+    const DS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+    const DF = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
+    const MO = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    const pad2 = n => String(n).padStart(2, "0");
+    const fmtT = d => d.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
+    const toM = s => { if (!s) return null; const [h, m] = s.split(":").map(Number); return h * 60 + m; };
+    const vib = p => { try { navigator.vibrate?.(p); } catch {} };
+    const AED2KD = 11.9;
+    const n2 = v => { const n = parseFloat(v); return isNaN(n) || v === "" ? null : n; };
+
+    function weekDates() {
+      const now = new Date(), d = now.getDay(), mon = new Date(now);
+      mon.setDate(now.getDate() - ((d + 6) % 7));
+      return Array.from({ length: 7 }, (_, i) => { const x = new Date(mon); x.setDate(mon.getDate() + i); return x; });
+    }
+    function isToday(d) { const n = new Date(); return d.getDate() === n.getDate() && d.getMonth() === n.getMonth() && d.getFullYear() === n.getFullYear(); }
+    function shortTime(t) { if (!t) return ""; const [h, m] = t.split(":").map(Number); return `${h % 12 || 12}${m ? ":" + pad2(m) : ""}${h >= 12 ? "pm" : "am"}`; }
+    function shiftType(t) { const m = toM(t); if (m == null) return ""; if (m < 720) return "Morning"; if (m < 1020) return "Afternoon"; return "Evening"; }
+
+    function defaultTasks(c = []) {
+      return [
+        { id: "t1", g: "START", n: "Clock In", r: true, d: false, at: null, tp: "c" },
+        { id: "t2", g: "START", n: "Temperature Chart", r: true, d: false, at: null, tp: "t", ti: "", to: "" },
+        { id: "t3", g: "START", n: "Key Sign", r: true, d: false, at: null, tp: "c" },
+        { id: "t4", g: "START", n: "Take Key", r: true, d: false, at: null, tp: "c" },
+        { id: "t5", g: "DURING", n: "Fridge Temp", r: false, d: false, at: null, tp: "c" },
+        { id: "t6", g: "DURING", n: "Near Expiry", r: false, d: false, at: null, tp: "c" },
+        { id: "t7", g: "HAND", n: "E-Key Handover", r: true, d: false, at: null, tp: "c" },
+        { id: "t8", g: "HAND", n: "E-Cash Handover", r: true, d: false, at: null, tp: "c" },
+        { id: "t9", g: "HAND", n: "Sales Update", r: true, d: false, at: null, tp: "c" },
+        { id: "t10", g: "HAND", n: "Waste Disposed", r: false, d: false, at: null, tp: "c" },
+        { id: "t11", g: "HAND", n: "Dispensary Clear", r: false, d: false, at: null, tp: "c" },
+        ...c.map((x, i) => ({ id: "c" + i, g: x.grp, n: x.name, r: x.req, d: false, at: null, tp: "c" })),
+      ];
+    }
+
+    const CSS = `
+      @keyframes fadeUp{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:translateY(0)}}
+      @keyframes spin{to{transform:rotate(360deg)}}
+      @keyframes pop{0%{transform:scale(1)}50%{transform:scale(1.06)}100%{transform:scale(1)}}
+      @keyframes pulse{0%,100%{opacity:1}50%{opacity:.5}}
+      @keyframes slideIn{from{opacity:0;transform:translateX(-8px)}to{opacity:1;transform:translateX(0)}}
+      :root{
+        --teal:#1A6B5A;--teal2:#228B73;--tealD:#143D35;--tealL:#E6F5F0;--tealXL:#F2FAF7;
+        --amber:#E8913A;--amber2:#F0A050;--amberL:#FFF5E8;--amberD:#C47520;
+        --navy:#1C2A36;--navy2:#2C3E50;--bg:#F5F2ED;--bg2:#EDE9E3;
+        --card:#FFFFFF;--border:#E6E0D8;--borderL:#F0EBE3;
+        --t1:#1C2A36;--t2:#3A5468;--t3:#7A8FA0;--t4:#AAB8C5;
+        --fd:'Playfair Display',serif;--fb:'DM Sans',sans-serif;--fm:'JetBrains Mono',monospace;
+        --r:20px;--rl:26px;--sh:0 4px 24px rgba(28,42,54,.08),0 1px 4px rgba(28,42,54,.04)
+      }
+    `;
+
+    // ══════════════════════════════════════════════
+    // MAIN APP
+    // ══════════════════════════════════════════════
+    function App() {
+      const [ld, setLd] = useState(true);
+      const [scr, setScr] = useState("home");
+      const [tm, setTm] = useState("");
+      const tt = useRef(null);
+      const toast = useCallback(m => { setTm(m); clearTimeout(tt.current); tt.current = setTimeout(() => setTm(""), 2800); }, []);
+
+      const [cfg, setCfg] = useState(DEF_CFG);
+      const [sh, setSh] = useState({ s: null, e: null, as: null, ae: null, on: false, fin: false });
+      const [staff, setStaff] = useState([]);
+      const [notes, setNotes] = useState("");
+      const [tasks, setTasks] = useState([]);
+      const [ct, setCt] = useState([]);
+      const [photos, setPhotos] = useState([]);
+      const [hist, setHist] = useState([]);
+      const [clk, setClk] = useState([]);
+      const [sales, setSales] = useState({});
+      const [week, setWeek] = useState({});
+      const [alarm, setAlarm] = useState(false);
+      const [sumRec, setSumRec] = useState(null);
+      const [ocrTxt, setOcrTxt] = useState("");
+      const [ocrSt, setOcrSt] = useState("");
+      const [sf, setSf] = useState({ totalAED: "", trn: "", footfall: "", no7AED: "", no7Focus: "", totalProducts: "", aura: "" });
+
+      // Load
+      useEffect(() => {
+        (async () => {
+          const [c, a, h, k, s, cu, w] = await Promise.all([sGet("cfg"), sGet("app"), sGet("hist"), sGet("clk"), sGet("sales"), sGet("ct"), sGet("week")]);
+          if (c) setCfg({ ...DEF_CFG, ...c });
+          if (h) setHist(h); if (k) setClk(k); if (s) setSales(s); if (cu) setCt(cu); if (w) setWeek(w);
+          if (a) {
+            if (a.staff) setStaff(a.staff);
+            if (a.notes) setNotes(a.notes);
+            if (a.sh) setSh(a.sh);
+            if (a.tasks?.length) setTasks(a.tasks); else setTasks(defaultTasks(cu || []));
+            if (a.photos) setPhotos(a.photos);
+            if (a.alarm) setAlarm(true);
+          } else setTasks(defaultTasks(cu || []));
+          setLd(false);
+        })();
+      }, []);
+
+      // Save
+      useEffect(() => { if (!ld) sSet("app", { sh, staff, notes, tasks, photos: photos.map(() => "p"), alarm }); }, [sh, staff, notes, tasks, photos, alarm, ld]);
+      useEffect(() => { if (!ld) sSet("cfg", cfg); }, [cfg, ld]);
+
+      const todayN = DF[((new Date().getDay() + 6) % 7)];
+      const todaySch = week[todayN];
+      useEffect(() => { if (todaySch && !sh.s && !sh.on) setSh(p => ({ ...p, s: todaySch.start, e: todaySch.end })); }, [todaySch]);
+
+      // Alarm
+      useEffect(() => {
+        if (!alarm || !sh.s || sh.on || sh.fin) return;
+        const iv = setInterval(() => {
+          const now = new Date(), c = now.getHours() * 60 + now.getMinutes(), s = toM(sh.s);
+          if (s == null) return;
+          const d = s - c;
+          if (d === 10) { vib([600, 200, 600, 200, 600]); toast("⏰ 10 minutes!"); }
+          if (d === 60) { vib([400, 150, 400]); toast("⏰ 1 hour!"); }
+          if (d === 0) { vib([800, 200, 800, 200, 800]); toast("🚨 SHIFT NOW!"); }
+        }, 30000);
+        return () => clearInterval(iv);
+      }, [alarm, sh.s, sh.on, sh.fin]);
+
+      const done = tasks.filter(t => t.d).length, total = tasks.length;
+      const pct = total ? Math.round(done / total * 100) : 0;
+      const reqs = {
+        started: sh.on || sh.fin,
+        staff: staff.length > 0,
+        tasks: tasks.filter(t => t.r).every(t => t.tp === "t" ? (t.ti && t.to) : t.d),
+        photo: photos.length > 0
+      };
+      const canFin = reqs.started && reqs.staff && reqs.tasks && reqs.photo && !sh.fin;
+
+      const elapsed = () => {
+        if (!sh.on || !sh.as) return "";
+        const m = Math.floor((Date.now() - new Date(sh.as)) / 60000);
+        return m < 60 ? `${m}m` : `${Math.floor(m / 60)}h${pad2(m % 60)}m`;
+      };
+
+      const doStart = () => {
+        if (sh.fin) { setSumRec(hist[0]); setScr("summary"); return; }
+        if (sh.on) { toast("Already on shift"); return; }
+        vib([800, 200, 800, 200, 800]);
+        setSh({ ...sh, on: true, as: new Date().toISOString() });
+        toast("✅ Started!");
+      };
+
+      const togTask = id => {
+        if (sh.fin) return;
+        const t = tasks.find(x => x.id === id);
+        if (!t || t.tp === "t") return;
+        vib([30]);
+        setTasks(tasks.map(x => x.id === id ? { ...x, d: !x.d, at: !x.d ? fmtT(new Date()) : null } : x));
+      };
+
+      const setTmp = (id, f, v) => {
+        setTasks(tasks.map(x => {
+          if (x.id !== id) return x;
+          const u = { ...x, [f === "i" ? "ti" : "to"]: v };
+          if (u.ti && u.to) { u.d = true; u.at = fmtT(new Date()); vib([40]); }
+          else { u.d = false; u.at = null; }
+          return u;
+        }));
+      };
+
+      const doFinish = async () => {
+        if (!canFin) return;
+        const ns = { ...sh, fin: true, ae: new Date().toISOString() };
+        setSh(ns); vib([350, 100, 350]);
+        const rec = {
+          id: Date.now() + "", date: new Date().toLocaleDateString("en-GB"), di: new Date().toISOString(),
+          ss: sh.s, se: sh.e, as: sh.as, ae: ns.ae,
+          staff: [...staff], tasks: tasks.map(t => ({ ...t })), notes, pc: photos.length
+        };
+        const nh = [rec, ...hist]; setHist(nh); await sSet("hist", nh);
+        const a = sh.as ? fmtT(new Date(sh.as)) : "--", b = fmtT(new Date());
+        const m = sh.as ? Math.floor((Date.now() - new Date(sh.as)) / 60000) : 0;
+        const cr = {
+          id: Date.now() + "", date: new Date().toLocaleDateString("en-GB"),
+          day: DF[(new Date().getDay() + 6) % 7],
+          si: sh.s || "--", se: sh.e || "--", ci: a, co: b,
+          dur: `${Math.floor(m / 60)}h ${pad2(m % 60)}m`, staff: [...staff]
+        };
+        const nc = [cr, ...clk]; setClk(nc); await sSet("clk", nc);
+        toast("✅ Complete!"); setSumRec(rec); setTimeout(() => setScr("summary"), 400);
+      };
+
+      const doNew = async () => {
+        setSh({ s: todaySch?.start || null, e: todaySch?.end || null, as: null, ae: null, on: false, fin: false });
+        setStaff([]); setNotes(""); setTasks(defaultTasks(ct)); setPhotos([]); setAlarm(false);
+        await sSet("app", null); toast("✅ Ready!"); setScr("home");
+      };
+
+      // Sales
+      const tAED = n2(sf.totalAED), tKD = tAED != null ? tAED / AED2KD : null;
+      const trn = n2(sf.trn), foot = n2(sf.footfall);
+      const n7AED = n2(sf.no7AED), n7KD = n7AED != null ? n7AED / AED2KD : null;
+      const tProd = n2(sf.totalProducts), aura = n2(sf.aura);
+      const ipc = tProd != null && trn ? (tProd / trn).toFixed(2) : null;
+      const atv = tKD != null && trn ? (tKD / trn).toFixed(2) : null;
+      const conv = trn != null && foot ? ((trn / foot) * 100).toFixed(1) : null;
+      const n7pct = n7AED != null && tAED ? ((n7AED / tAED) * 100).toFixed(1) : null;
+      const auraPct = aura != null && trn ? ((aura / trn) * 100).toFixed(1) : null;
+
+      useEffect(() => {
+        if (scr === "sales") {
+          const k = new Date().toISOString().split("T")[0];
+          const e = sales[k]; if (e) setSf(e);
+        }
+      }, [scr]);
+
+      // OCR
+      const processOCR = async (file) => {
+        if (!window.Tesseract) { toast("OCR unavailable"); return null; }
+        setOcrSt("scanning");
+        try {
+          const r = await window.Tesseract.recognize(file, "eng", { logger: m => { if (m.status === "recognizing text") setOcrSt(`${Math.round(m.progress * 100)}%`); } });
+          setOcrTxt(r.data.text); setOcrSt("done"); toast("✅ Scanned!"); return r.data.text;
+        } catch { setOcrSt(""); toast("OCR failed"); return null; }
+      };
+
+      const extractShifts = (text, name) => {
+        if (!text || !name) return {};
+        const lines = text.split("\n").map(l => l.trim()).filter(l => l.length > 2);
+        const my = lines.filter(l => l.toUpperCase().includes(name.toUpperCase()));
+        const sched = {}, tp = /(\d{1,2}[:.]\d{2})\s*[-–→to]+\s*(\d{1,2}[:.]\d{2})/gi;
+        const nm = t => { const p = t.replace(".", ":").split(":"); return p[0].padStart(2, "0") + ":" + (p[1] || "00").padStart(2, "0"); };
+        my.forEach(line => {
+          const days = []; let dm; const dr = /\b(mon|tue|wed|thu|fri|sat|sun)\w*/gi;
+          while ((dm = dr.exec(line)) !== null) { const f = DF.find(x => x.toLowerCase().startsWith(dm[1].toLowerCase())); if (f) days.push(f); }
+          let tm2 = tp.exec(line);
+          if (tm2) {
+            const s = nm(tm2[1]), e = nm(tm2[2]);
+            if (days.length) days.forEach(d => { sched[d] = { start: s, end: e, raw: line }; });
+            else { const u = DF.find(d => !sched[d]); if (u) sched[u] = { start: s, end: e, raw: line }; }
+          }
+          tp.lastIndex = 0;
+        });
+        return sched;
+      };
+
+      const applyWeek = async (s) => {
+        setWeek(s); await sSet("week", s);
+        const td = DF[(new Date().getDay() + 6) % 7];
+        if (s[td] && !sh.on) setSh(p => ({ ...p, s: s[td].start, e: s[td].end }));
+        toast("✅ Schedule applied!");
+      };
+
+      const wd = weekDates();
+      const now = new Date();
+      const greeting = now.getHours() < 12 ? "Good morning" : now.getHours() < 18 ? "Good afternoon" : "Good evening";
+      const tmins = clk.reduce((s, r) => {
+        if (r.dur) { const m = r.dur.match(/(\d+)h\s*(\d+)m/); if (m) return s + parseInt(m[1]) * 60 + parseInt(m[2]); }
+        return s;
+      }, 0);
+
+      if (ld) return (
+        <div style={{ height: "100dvh", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", background: "#F5F2ED", gap: 16 }}>
+          <style>{CSS}</style>
+          <div style={{ width: 50, height: 50, border: "4px solid #E6E0D8", borderTopColor: "#1A6B5A", borderRadius: "50%", animation: "spin .7s linear infinite" }} />
+          <div style={{ fontFamily: "var(--fd)", fontSize: 26, color: "#1C2A36", fontWeight: 800 }}>Tracker Made Easy</div>
+          <div style={{ fontSize: 12, color: "#7A8FA0", fontWeight: 600 }}>by Vysakh</div>
+        </div>
+      );
+
+      return (
+        <div style={{ height: "100dvh", display: "flex", flexDirection: "column", overflow: "hidden", background: "var(--bg)", fontFamily: "var(--fb)" }}>
+          <style>{CSS}</style>
+          <div style={{ flex: 1, overflow: "auto", WebkitOverflowScrolling: "touch" }}>
+
+            {/* HOME */}
+            {scr === "home" && (
+              <div style={{ paddingBottom: 24, animation: "fadeUp .4s ease" }}>
+                <div style={{ padding: "max(14px, env(safe-area-inset-top)) 20px 0", display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+                  <div>
+                    <div style={{ fontSize: 13, fontWeight: 600, color: "var(--t3)" }}>{greeting} 👋</div>
+                    <div style={{ fontFamily: "var(--fd)", fontSize: 28, color: "var(--t1)", fontWeight: 800, lineHeight: 1.15, marginTop: 2 }}>
+                      Let's track<br />your <span style={{ color: "var(--amber)" }}>Shift</span>
+                    </div>
+                  </div>
+                  <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 6, marginTop: 4 }}>
+                    <div style={{ background: "var(--card)", border: "1.5px solid var(--borderL)", borderRadius: 14, padding: "6px 12px", display: "flex", alignItems: "center", gap: 5, boxShadow: "var(--sh)" }}>
+                      <span style={{ fontSize: 14 }}>💊</span>
+                      <div><div style={{ fontFamily: "var(--fd)", fontSize: 10, color: "var(--teal)", lineHeight: 1 }}>Tracker</div><div style={{ fontSize: 7, color: "var(--t4)", fontWeight: 700 }}>by Vysakh</div></div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Progress */}
+                <div style={{ margin: "14px 20px", background: "linear-gradient(135deg, var(--tealL), #D8F0E8)", border: "1.5px solid rgba(26,107,90,.12)", borderRadius: "var(--rl)", padding: "18px 20px", display: "flex", alignItems: "center", gap: 16, boxShadow: "0 6px 28px rgba(26,107,90,.1)" }}>
+                  <div style={{ width: 64, height: 64, position: "relative", flexShrink: 0 }}>
+                    <svg viewBox="0 0 64 64" style={{ transform: "rotate(-90deg)", width: 64, height: 64 }}>
+                      <circle cx="32" cy="32" r="28" fill="none" stroke="rgba(26,107,90,.12)" strokeWidth="5.5" />
+                      <circle cx="32" cy="32" r="28" fill="none" stroke="var(--teal)" strokeWidth="5.5" strokeLinecap="round" strokeDasharray="176" strokeDashoffset={176 - (176 * pct / 100)} style={{ transition: "stroke-dashoffset .8s cubic-bezier(.4,0,.2,1)" }} />
+                    </svg>
+                    <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "var(--fm)", fontSize: 16, fontWeight: 700, color: "var(--teal)" }}>{pct}%</div>
+                  </div>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontSize: 15, fontWeight: 800, color: "var(--t1)" }}>{pct === 100 ? "All tasks done! ✅" : "Today's progress"}</div>
+                    <div style={{ fontSize: 12, color: "var(--t3)", marginTop: 2 }}>{done} of {total} tasks completed</div>
+                    {pct < 100 && <div style={{ marginTop: 8, background: "var(--teal)", color: "#fff", borderRadius: 10, padding: "6px 14px", fontSize: 11, fontWeight: 800, display: "inline-block", cursor: "pointer" }} onClick={() => document.getElementById("cl-section")?.scrollIntoView({ behavior: "smooth" })}>View Tasks</div>}
+                  </div>
+                </div>
+
+                {/* Shift + Alarm */}
+                <div style={{ display: "flex", gap: 10, margin: "0 20px 12px" }}>
+                  <div style={{ flex: 1, background: "var(--card)", border: "1.5px solid var(--borderL)", borderRadius: "var(--rl)", padding: "16px 18px", boxShadow: "var(--sh)", position: "relative", overflow: "hidden" }}>
+                    {sh.on && <div style={{ position: "absolute", top: 10, right: 12, width: 8, height: 8, borderRadius: "50%", background: "#22C55E", animation: "pulse 1.5s infinite" }} />}
+                    <div style={{ fontSize: 10, fontWeight: 800, color: sh.on ? "#22C55E" : sh.fin ? "var(--teal)" : "var(--t4)", textTransform: "uppercase", letterSpacing: ".1em" }}>
+                      {sh.fin ? "✓ DONE" : sh.on ? "● LIVE" : "TODAY'S SHIFT"}
+                    </div>
+                    <div style={{ fontFamily: "var(--fm)", fontSize: 24, fontWeight: 700, color: "var(--t1)", lineHeight: 1.1, marginTop: 4 }}>
+                      {sh.s && sh.e ? `${sh.s}–${sh.e}` : sh.s || "Not set"}
+                    </div>
+                    <div style={{ fontSize: 11, color: "var(--t3)", fontWeight: 600, marginTop: 2 }}>{shiftType(sh.s)}{sh.on ? ` · ${elapsed()}` : ""}</div>
+                    {staff.length > 0 && <div style={{ fontSize: 10, color: "var(--t4)", marginTop: 4 }}>👥 {staff.join(", ")}</div>}
+                  </div>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                    <button onClick={doStart} style={{ width: 58, height: 58, borderRadius: 18, border: "none", background: sh.fin ? "var(--t3)" : sh.on ? "var(--teal2)" : "var(--teal)", color: "#fff", fontSize: 22, cursor: "pointer", boxShadow: "0 6px 20px rgba(26,107,90,.3)", display: "flex", alignItems: "center", justifyContent: "center", transition: "transform .15s" }}>
+                      {sh.fin ? "✓" : sh.on ? "⏳" : "▶"}
+                    </button>
+                    <button onClick={() => { if (!sh.s) { toast("Set time first"); return; } setAlarm(!alarm); vib([50, 30, 50]); toast(alarm ? "🔕 Off" : `🔔 1h & 10m before ${sh.s}`); }} style={{ width: 58, height: 40, borderRadius: 14, border: "none", background: alarm ? "var(--navy)" : "var(--bg2)", color: alarm ? "#FFD666" : "var(--t4)", fontSize: 18, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", transition: "all .2s", boxShadow: alarm ? "0 4px 16px rgba(28,42,54,.3)" : "none" }}>
+                      {alarm ? "🔔" : "🔕"}
+                    </button>
+                  </div>
+                </div>
+
+                {/* Calendar */}
+                <div style={{ margin: "0 20px 14px", background: "linear-gradient(145deg, #1A3D35 0%, #1A6B5A 100%)", borderRadius: "var(--rl)", padding: "16px 14px 14px", color: "#fff", boxShadow: "0 8px 32px rgba(26,107,90,.25)" }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12, padding: "0 4px" }}>
+                    <span style={{ fontFamily: "var(--fd)", fontSize: 16, fontWeight: 800 }}>{MO[now.getMonth()]} {now.getFullYear()}</span>
+                    <span style={{ fontSize: 10, opacity: .6 }}>Week {Math.ceil(now.getDate() / 7)}</span>
+                  </div>
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 5 }}>
+                    {wd.map((d, i) => {
+                      const today = isToday(d), sc = week[DF[i]];
+                      return (
+                        <div key={i} onClick={() => { if (sc && !sh.on) { setSh(p => ({ ...p, s: sc.start, e: sc.end })); toast(`Set ${sc.start}–${sc.end}`); } }} style={{ borderRadius: 14, padding: "8px 2px 6px", textAlign: "center", cursor: sc ? "pointer" : "default", background: today ? "var(--amber)" : sc ? "rgba(255,255,255,.1)" : "rgba(255,255,255,.04)", transition: "all .15s" }}>
+                          <div style={{ fontSize: 9, fontWeight: 700, opacity: today ? 1 : .5, textTransform: "uppercase" }}>{DS[i]}</div>
+                          <div style={{ fontFamily: "var(--fm)", fontSize: 18, fontWeight: 700, lineHeight: 1.1, marginTop: 2 }}>{d.getDate()}</div>
+                          {sc ? (
+                            <div style={{ fontSize: 7, fontWeight: 700, opacity: .85, marginTop: 2, lineHeight: 1 }}>{shortTime(sc.start)}<br />{shortTime(sc.end)}</div>
+                          ) : <div style={{ fontSize: 7, opacity: .3, marginTop: 2 }}>—</div>}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {/* Time pickers */}
+                <div style={{ display: "flex", gap: 10, margin: "0 20px 12px" }}>
+                  {[["Start", sh.s, v => setSh({ ...sh, s: v || null })], ["End", sh.e, v => setSh({ ...sh, e: v || null })]].map(([l, v, fn]) => (
+                    <div key={l} style={{ flex: 1, background: "var(--card)", border: "1.5px solid var(--borderL)", borderRadius: 16, padding: "10px 14px", boxShadow: "var(--sh)" }}>
+                      <div style={{ fontSize: 9, fontWeight: 800, color: "var(--t4)", textTransform: "uppercase", letterSpacing: ".08em", marginBottom: 3 }}>Shift {l}</div>
+                      <input type="time" value={v || ""} onChange={e => fn(e.target.value)} style={{ background: "transparent", fontFamily: "var(--fm)", fontSize: 18, fontWeight: 600, color: "var(--t1)", width: "100%" }} />
+                    </div>
+                  ))}
+                </div>
+
+                <StaffCard staff={staff} setStaff={setStaff} toast={toast} />
+
+                <div style={{ background: "var(--amberL)", border: "1.5px solid rgba(232,145,58,.12)", borderRadius: "var(--r)", padding: "12px 16px", margin: "0 20px 12px" }}>
+                  <div style={{ fontSize: 9, fontWeight: 800, color: "var(--amber)", textTransform: "uppercase", letterSpacing: ".09em", marginBottom: 5 }}>⚡ Notes</div>
+                  <textarea value={notes} onChange={e => setNotes(e.target.value)} placeholder="Tasks, reminders..." rows={2} style={{ width: "100%", border: "none", background: "transparent", fontSize: 13, color: "var(--t1)", resize: "none", minHeight: 36, lineHeight: 1.5 }} />
+                </div>
+
+                <div id="cl-section" />
+                <SH title="CHECKLIST" badge={`${done}/${total}`} ok={done === total} />
+                <div style={{ padding: "0 20px" }}>
+                  {["START", "DURING", "HAND"].map(g => {
+                    const gt = tasks.filter(t => t.g === g); if (!gt.length) return null;
+                    return (
+                      <div key={g}>
+                        <div style={{ fontSize: 9, fontWeight: 800, textTransform: "uppercase", letterSpacing: ".1em", color: "var(--t4)", margin: "8px 0 4px 2px" }}>{g === "HAND" ? "HANDOVER" : g}</div>
+                        {gt.map(t => <TI key={t.id} t={t} onTap={() => togTask(t.id)} onTmp={(f, v) => setTmp(t.id, f, v)} />)}
+                      </div>
+                    );
+                  })}
+                </div>
+
+                <SH title="PROOF" badge={photos.length ? "✅" : "REQ"} ok={photos.length > 0} />
+                <PP photos={photos} setPhotos={setPhotos} />
+
+                <div style={{ padding: "8px 20px 0" }}>
+                  <div style={{ background: "var(--card)", border: "1.5px solid var(--borderL)", borderRadius: "var(--r)", padding: "12px 14px", marginBottom: 10, boxShadow: "var(--sh)" }}>
+                    <div style={{ fontSize: 11, fontWeight: 800, color: "var(--t2)", marginBottom: 6 }}>🔒 Required:</div>
+                    {[["started", "Shift started"], ["staff", "Staff name(s)"], ["tasks", "Required tasks"], ["photo", "Proof photo"]].map(([k, l]) => (
+                      <div key={k} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: reqs[k] ? "var(--teal)" : "var(--t4)", marginBottom: 3 }}><span>{reqs[k] ? "✓" : "○"}</span>{l}</div>
+                    ))}
+                  </div>
+                  <BTN c="t" dis={!canFin} fn={doFinish}>{sh.fin ? "✓ COMPLETE" : "✓ FINISH SHIFT"}</BTN>
+                </div>
+              </div>
+            )}
+
+            {/* SALES */}
+            {scr === "sales" && (
+              <div style={{ paddingBottom: 24, animation: "fadeUp .3s ease" }}>
+                <PH t="Sales Entry" s="KPIs · AED → KD (÷11.9)" />
+                <div style={{ padding: "0 20px", marginBottom: 10 }}>
+                  <SI l="TOTAL SALES" v={sf.totalAED} fn={v => setSf({ ...sf, totalAED: v })} s="AED" kd={tKD} />
+                  <SI l="TRANSACTIONS" v={sf.trn} fn={v => setSf({ ...sf, trn: v })} s="TRN" />
+                  <SI l="FOOTFALL (SFA)" v={sf.footfall} fn={v => setSf({ ...sf, footfall: v })} s="👣" />
+                  <SI l="NO7 — AMOUNT" v={sf.no7AED} fn={v => setSf({ ...sf, no7AED: v })} s="AED" kd={n7KD} a />
+                  <SI l="NO7 — FOCUS PRODUCTS" v={sf.no7Focus} fn={v => setSf({ ...sf, no7Focus: v })} s="pcs" a />
+                  <SI l="TOTAL PRODUCTS SOLD" v={sf.totalProducts} fn={v => setSf({ ...sf, totalProducts: v })} s="items" />
+                  <SI l="AURA SIGNUPS" v={sf.aura} fn={v => setSf({ ...sf, aura: v })} s="🔗" />
+                </div>
+                <SH title="CALCULATED KPIs" />
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, padding: "0 20px", marginBottom: 12 }}>
+                  <KC l="IPC" s="Items/TRN" v={ipc} f="Products÷TRN" c="var(--teal)" />
+                  <KC l="ATV" s="Avg TRN (KD)" v={atv} f="KD÷TRN" c="#2A6B5E" />
+                  <KC l="CONV %" s="Conversion" v={conv ? conv + "%" : null} f="TRN÷Foot×100" c="var(--amber)" />
+                  <KC l="No7 %" s="No7 Share" v={n7pct ? n7pct + "%" : null} f="No7÷Total×100" c="#1B6B8A" />
+                  <KC l="AURA %" s="Linkage" v={auraPct ? auraPct + "%" : null} f="AURA÷TRN×100" c="#8A5E1B" />
+                  <KC l="TOTAL KD" s="From AED" v={tKD != null ? tKD.toFixed(2) : null} f={`${tAED?.toLocaleString() || "—"}÷11.9`} c="var(--teal)" />
+                </div>
+                <div style={{ padding: "0 20px" }}>
+                  <BTN c="t" fn={async () => {
+                    const k = new Date().toISOString().split("T")[0];
+                    const ns = { ...sales, [k]: { ...sf, at: new Date().toISOString() } };
+                    setSales(ns); await sSet("sales", ns); toast("✅ Saved!");
+                  }}>✓ Save Sales</BTN>
+                </div>
+              </div>
+            )}
+
+            {/* ROTA */}
+            {scr === "rota" && <RotaScr cfg={cfg} ocrTxt={ocrTxt} setOcrTxt={setOcrTxt} ocrSt={ocrSt} processOCR={processOCR} extractShifts={extractShifts} applyWeek={applyWeek} week={week} toast={toast} />}
+
+            {/* HISTORY */}
+            {scr === "history" && (
+              <div style={{ paddingBottom: 24, animation: "fadeUp .3s ease" }}>
+                <PH t="History" s="Completed shifts" />
+                {!hist.length
+                  ? <div style={{ textAlign: "center", padding: "50px 20px", color: "var(--t4)" }}><div style={{ fontSize: 40, marginBottom: 8 }}>📋</div><div style={{ fontFamily: "var(--fd)", fontSize: 16, color: "var(--t2)" }}>No shifts yet</div></div>
+                  : hist.map(r => (
+                    <div key={r.id} onClick={() => { setSumRec(r); setScr("summary"); }} style={{ background: "var(--card)", border: "1.5px solid var(--borderL)", borderRadius: "var(--r)", padding: "14px 16px", margin: "6px 20px", cursor: "pointer", boxShadow: "var(--sh)" }}>
+                      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 3 }}>
+                        <span style={{ fontFamily: "var(--fd)", fontSize: 14, color: "var(--t1)" }}>{r.date}</span>
+                        <span style={{ background: "var(--tealL)", color: "var(--teal)", borderRadius: 10, padding: "2px 8px", fontSize: 10, fontWeight: 800 }}>✓</span>
+                      </div>
+                      <div style={{ fontSize: 11, color: "var(--t3)" }}>{r.as ? fmtT(new Date(r.as)) : "--"} → {r.ae ? fmtT(new Date(r.ae)) : "--"} · {r.tasks.filter(t => t.d).length}/{r.tasks.length}</div>
+                      {r.staff?.length ? <div style={{ fontSize: 10, color: "var(--t4)", marginTop: 2 }}>👥 {r.staff.join(", ")}</div> : null}
+                    </div>
+                  ))}
+              </div>
+            )}
+
+            {/* SETTINGS */}
+            {scr === "settings" && (
+              <SetScr cfg={cfg} setCfg={setCfg} clk={clk} tmins={tmins} hist={hist} ct={ct} setCt={setCt} setTasks={setTasks} toast={toast}
+                onClear={async () => {
+                  setHist([]); setClk([]); setSales({}); setWeek({});
+                  await sSet("hist", []); await sSet("clk", []); await sSet("sales", {}); await sSet("week", {});
+                  await doNew();
+                }}
+              />
+            )}
+
+            {/* SUMMARY */}
+            {scr === "summary" && <SumScr r={sumRec} onNew={doNew} onBack={() => setScr("history")} />}
+          </div>
+
+          {/* NAV */}
+          <nav style={{ display: "flex", background: "rgba(255,255,255,.93)", backdropFilter: "saturate(180%) blur(20px)", WebkitBackdropFilter: "saturate(180%) blur(20px)", borderTop: "1px solid rgba(230,224,216,.6)", padding: "5px 0 max(5px, env(safe-area-inset-bottom))", flexShrink: 0 }}>
+            {[["home", "🏠", "Home"], ["sales", "💰", "Sales"], ["rota", "📋", "Rota"], ["history", "📂", "History"], ["settings", "⚙️", "More"]].map(([id, ic, lb]) => (
+              <button key={id} onClick={() => setScr(id)} style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", gap: 1, padding: "5px 2px", cursor: "pointer", background: "none", color: scr === id ? "var(--teal)" : "var(--t4)", fontSize: 9, fontWeight: 700 }}>
+                <div style={{ width: 28, height: 28, borderRadius: 9, fontSize: 17, display: "flex", alignItems: "center", justifyContent: "center", background: scr === id ? "var(--tealL)" : "transparent", transition: "all .2s" }}>{ic}</div>
+                <span>{lb}</span>
+              </button>
+            ))}
+          </nav>
+
+          {tm && <div style={{ position: "fixed", bottom: 82, left: "50%", transform: "translateX(-50%)", background: "var(--navy)", color: "#fff", padding: "9px 20px", borderRadius: 20, fontSize: 12, fontWeight: 600, zIndex: 500, animation: "fadeUp .2s ease", maxWidth: "85vw", whiteSpace: "nowrap" }}>{tm}</div>}
+        </div>
+      );
+    }
+
+    // ── Components ──
+    function StaffCard({ staff, setStaff, toast }) {
+      const [v, setV] = useState("");
+      return (
+        <div style={{ background: "var(--card)", border: "1.5px solid var(--borderL)", borderRadius: "var(--r)", padding: "12px 16px", margin: "0 20px 12px", boxShadow: "var(--sh)" }}>
+          <div style={{ fontSize: 9, fontWeight: 800, color: "var(--t4)", textTransform: "uppercase", letterSpacing: ".08em", marginBottom: 6 }}>👥 Staff</div>
+          {staff.length > 0 && <div style={{ display: "flex", flexWrap: "wrap", gap: 5, marginBottom: 8 }}>{staff.map((n, i) => <div key={i} style={{ background: "var(--tealL)", color: "var(--teal)", borderRadius: 14, padding: "4px 10px 4px 12px", fontSize: 12, fontWeight: 700, display: "flex", alignItems: "center", gap: 3 }}>{n}<button onClick={() => setStaff(staff.filter((_, j) => j !== i))} style={{ background: "none", color: "var(--teal)", fontSize: 14, opacity: .5, cursor: "pointer", lineHeight: 1 }}>×</button></div>)}</div>}
+          <div style={{ display: "flex", gap: 6 }}>
+            <input value={v} onChange={e => setV(e.target.value)} onKeyDown={e => { if (e.key === "Enter") { e.preventDefault(); if (v.trim()) { setStaff([...staff, v.trim()]); setV(""); } } }} placeholder="Name + Enter" style={{ flex: 1, height: 38, border: "1.5px solid var(--border)", borderRadius: 10, padding: "0 12px", fontSize: 13, color: "var(--t1)", background: "var(--bg)" }} />
+            <button onClick={() => { if (v.trim()) { setStaff([...staff, v.trim()]); setV(""); } }} style={{ width: 38, height: 38, borderRadius: 10, background: "var(--teal)", color: "#fff", fontSize: 18, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>+</button>
+          </div>
+        </div>
+      );
+    }
+
+    function PP({ photos, setPhotos }) {
+      const r = useRef(null);
+      return (
+        <div style={{ padding: "0 20px", marginBottom: 12 }}>
+          <div onClick={() => r.current?.click()} style={{ border: `2px ${photos.length ? "solid var(--teal)" : "dashed var(--border)"}`, borderRadius: "var(--r)", padding: 16, display: "flex", alignItems: "center", justifyContent: "center", gap: 8, cursor: "pointer", background: photos.length ? "var(--tealXL)" : "var(--card)", boxShadow: "var(--sh)" }}>
+            <span style={{ fontSize: 22 }}>{photos.length ? "✅" : "📷"}</span>
+            <span style={{ fontSize: 13, fontWeight: 700, color: "var(--t2)" }}>{photos.length ? `${photos.length} photo(s)` : "Upload Proof"}</span>
+          </div>
+          <input ref={r} type="file" accept="image/*" multiple style={{ display: "none" }} onChange={e => { [...e.target.files].forEach(f => { const rd = new FileReader(); rd.onload = ev => setPhotos(p => [...p, ev.target.result]); rd.readAsDataURL(f); }); e.target.value = ""; }} />
+          {photos.length > 0 && <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 8 }}>{photos.map((p, i) => <div key={i} style={{ position: "relative" }}><img src={p} style={{ width: 52, height: 52, borderRadius: 10, objectFit: "cover", border: "2px solid var(--teal)" }} /><button onClick={() => setPhotos(photos.filter((_, j) => j !== i))} style={{ position: "absolute", top: -4, right: -4, width: 18, height: 18, background: "#D94848", color: "#fff", borderRadius: "50%", fontSize: 10, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>×</button></div>)}</div>}
+        </div>
+      );
+    }
+
+    function TI({ t, onTap, onTmp }) {
+      return (
+        <div onClick={t.tp !== "t" ? onTap : undefined} style={{ display: "flex", alignItems: "center", gap: 10, background: t.d ? "var(--tealL)" : "var(--card)", border: `1.5px solid ${t.d ? "rgba(26,107,90,.15)" : "var(--borderL)"}`, borderRadius: 16, padding: "12px 14px", marginBottom: 6, cursor: "pointer", boxShadow: "var(--sh)", transition: "all .15s" }}>
+          <div style={{ width: 24, height: 24, borderRadius: "50%", border: `2.5px solid ${t.d ? "var(--teal)" : t.r ? "var(--amber)" : "var(--border)"}`, background: t.d ? "var(--teal)" : "transparent", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, color: "#fff", flexShrink: 0 }}>{t.d ? "✓" : ""}</div>
+          <div style={{ flex: 1 }}>
+            <div style={{ fontSize: 13, fontWeight: 600, color: t.d ? "var(--teal)" : "var(--t1)", textDecoration: t.d ? "line-through" : "none" }}>{t.n}</div>
+            {t.d && t.at && <div style={{ fontSize: 10, color: "var(--teal)", marginTop: 1 }}>✓ {t.at}{t.tp === "t" && t.ti ? ` · ${t.ti}°/${t.to}°` : ""}</div>}
+            {t.tp === "t" && !t.d && (
+              <div style={{ display: "flex", gap: 6, marginTop: 5 }} onClick={e => e.stopPropagation()}>
+                {["i", "o"].map(f => (
+                  <div key={f} style={{ flex: 1 }}>
+                    <input type="number" value={f === "i" ? t.ti || "" : t.to || ""} placeholder="°C" step="0.1" onChange={e => onTmp(f, e.target.value)} style={{ width: "100%", height: 32, border: `1.5px solid ${(f === "i" ? t.ti : t.to) ? "var(--teal)" : "var(--border)"}`, borderRadius: 8, fontFamily: "var(--fm)", fontSize: 14, fontWeight: 600, textAlign: "center", background: (f === "i" ? t.ti : t.to) ? "var(--tealXL)" : "var(--card)", color: "var(--t1)", padding: 0 }} />
+                    <div style={{ fontSize: 8, color: "var(--t4)", textAlign: "center", marginTop: 2, fontWeight: 700 }}>{f === "i" ? "IN" : "OUT"}</div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+          {t.r && <div style={{ width: 5, height: 5, borderRadius: "50%", background: t.d ? "var(--teal)" : "var(--amber)" }} />}
+        </div>
+      );
+    }
+
+    function SI({ l, v, fn, s, kd, a }) {
+      return (
+        <div style={{ background: a ? "var(--amberL)" : "var(--card)", border: `1.5px solid ${a ? "rgba(232,145,58,.12)" : "var(--borderL)"}`, borderRadius: 16, padding: "12px 14px", marginBottom: 8, boxShadow: "var(--sh)" }}>
+          <div style={{ fontSize: 9, fontWeight: 800, color: a ? "var(--amber)" : "var(--t4)", textTransform: "uppercase", letterSpacing: ".08em", marginBottom: 3 }}>{l}</div>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <input value={v} onChange={e => fn(e.target.value)} type="number" inputMode="decimal" placeholder="0" style={{ flex: 1, background: "transparent", fontFamily: "var(--fm)", fontSize: 20, fontWeight: 700, color: "var(--t1)", padding: 0 }} />
+            <span style={{ fontSize: 11, fontWeight: 700, color: "var(--t4)" }}>{s}</span>
+          </div>
+          {kd != null && <div style={{ marginTop: 3, fontSize: 11, fontWeight: 700, color: "var(--teal)", background: "var(--tealL)", display: "inline-block", padding: "2px 8px", borderRadius: 8 }}>= KD {kd.toFixed(2)}</div>}
+        </div>
+      );
+    }
+
+    function KC({ l, s, v, f, c }) {
+      return (
+        <div style={{ background: "var(--card)", border: "1.5px solid var(--borderL)", borderRadius: 14, padding: "12px 14px", boxShadow: "var(--sh)" }}>
+          <div style={{ fontSize: 9, fontWeight: 800, color: "var(--t4)", textTransform: "uppercase" }}>{l}</div>
+          <div style={{ fontFamily: "var(--fm)", fontSize: 22, fontWeight: 700, color: v != null ? c : "var(--t4)", lineHeight: 1.1, marginTop: 3 }}>{v ?? "—"}</div>
+          <div style={{ fontSize: 9, color: "var(--t3)", marginTop: 2 }}>{s}</div>
+          <div style={{ fontSize: 7, color: "var(--t4)", fontFamily: "var(--fm)", marginTop: 1 }}>{f}</div>
+        </div>
+      );
+    }
+
+    function SH({ title, badge, ok }) {
+      return (
+        <div style={{ display: "flex", justifyContent: "space-between", padding: "0 20px", margin: "8px 0" }}>
+          <div style={{ fontSize: 11, fontWeight: 800, color: "var(--t2)", textTransform: "uppercase", display: "flex", alignItems: "center", gap: 6 }}>
+            <div style={{ width: 6, height: 6, borderRadius: "50%", background: "var(--teal)" }} />{title}
+          </div>
+          {badge && <span style={{ fontSize: 10, fontWeight: 800, color: ok ? "#fff" : "var(--teal)", background: ok ? "var(--teal)" : "var(--tealL)", padding: "2px 8px", borderRadius: 12 }}>{badge}</span>}
+        </div>
+      );
+    }
+
+    function PH({ t, s }) {
+      return (
+        <div style={{ padding: "max(14px, env(safe-area-inset-top)) 20px 8px" }}>
+          <div style={{ fontFamily: "var(--fd)", fontSize: 24, color: "var(--t1)", fontWeight: 800 }}>{t}</div>
+          {s && <div style={{ fontSize: 12, color: "var(--t3)", marginTop: 2 }}>{s}</div>}
+        </div>
+      );
+    }
+
+    function BTN({ c, fn, dis, children }) {
+      const bg = c === "t" ? "linear-gradient(135deg,var(--teal),var(--teal2))" : c === "a" ? "linear-gradient(135deg,var(--amber),var(--amber2))" : "transparent";
+      return (
+        <button onClick={fn} disabled={dis} style={{ width: "100%", height: 50, background: dis ? "linear-gradient(135deg,#9CA3AF,#CBD5E1)" : bg, color: c === "o" ? "var(--teal)" : "#fff", border: c === "o" ? "2px solid var(--teal)" : "none", borderRadius: 16, fontSize: 14, fontWeight: 800, cursor: dis ? "not-allowed" : "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 7, marginBottom: 10, boxShadow: c === "o" || dis ? "none" : "0 5px 18px rgba(26,107,90,.2)" }}>
+          {children}
+        </button>
+      );
+    }
+
+    function RotaScr({ cfg, ocrTxt, setOcrTxt, ocrSt, processOCR, extractShifts, applyWeek, week, toast }) {
+      const [nm, setNm] = useState(cfg.name || "VYSAKH");
+      const [mt, setMt] = useState("");
+      const [sm, setSm] = useState(false);
+      const [el, setEl] = useState([]);
+      const [ps, setPs] = useState({});
+      const fr = useRef(null);
+      const doEx = (text, name) => {
+        const s = extractShifts(text, name);
+        setPs(s);
+        setEl(text.split("\n").filter(l => l.toUpperCase().includes(name.toUpperCase())));
+      };
+      return (
+        <div style={{ paddingBottom: 24, animation: "fadeUp .3s ease" }}>
+          <PH t="My Rota" s="Upload → OCR → detect your shifts" />
+          <div style={{ padding: "0 20px" }}>
+            <div style={{ background: "var(--card)", border: "1.5px solid var(--borderL)", borderRadius: "var(--r)", padding: "12px 16px", marginBottom: 10, boxShadow: "var(--sh)" }}>
+              <div style={{ fontSize: 9, fontWeight: 800, color: "var(--t4)", textTransform: "uppercase", marginBottom: 5 }}>🔍 Your name</div>
+              <input value={nm} onChange={e => setNm(e.target.value)} style={{ width: "100%", height: 38, border: "1.5px solid var(--border)", borderRadius: 10, padding: "0 12px", fontSize: 14, color: "var(--t1)", background: "var(--bg)" }} />
+            </div>
+            <BTN c="t" fn={() => fr.current?.click()}>📷 Upload Rota (OCR)</BTN>
+            <input ref={fr} type="file" accept="image/*" style={{ display: "none" }} onChange={async e => {
+              const f = e.target.files?.[0]; if (!f) return;
+              const t = await processOCR(f); if (t) doEx(t, nm); e.target.value = "";
+            }} />
+            {ocrSt && ocrSt !== "done" && <div style={{ textAlign: "center", padding: 20 }}><div style={{ width: 36, height: 36, border: "3px solid var(--tealL)", borderTopColor: "var(--teal)", borderRadius: "50%", animation: "spin .7s linear infinite", margin: "0 auto 8px" }} /><div style={{ fontSize: 13, fontWeight: 700, color: "var(--teal)" }}>{ocrSt}</div></div>}
+            <BTN c="o" fn={() => setSm(!sm)}>✏️ Manual / Paste</BTN>
+            {sm && <div>
+              <textarea value={mt} onChange={e => setMt(e.target.value)} placeholder={"Mon 09:00-17:30 VYSAKH\nTue 14:00-22:00 VYSAKH"} rows={5} style={{ width: "100%", minHeight: 90, border: "1.5px solid var(--border)", borderRadius: 16, padding: 12, fontFamily: "var(--fm)", fontSize: 12, color: "var(--t1)", background: "var(--bg)", resize: "vertical", marginBottom: 8, lineHeight: 1.6 }} />
+              <BTN c="t" fn={() => { if (!mt.trim()) return; setOcrTxt(mt); doEx(mt, nm); setSm(false); toast("✅ Done!"); }}>✓ Process</BTN>
+            </div>}
+            {el.length > 0 && <div style={{ background: "var(--card)", border: "1.5px solid var(--borderL)", borderRadius: "var(--r)", padding: "12px 16px", marginBottom: 10, boxShadow: "var(--sh)" }}>
+              <div style={{ fontSize: 9, fontWeight: 800, color: "var(--t4)", textTransform: "uppercase", marginBottom: 6 }}>Lines for "{nm}"</div>
+              {el.map((l, i) => <div key={i} style={{ fontFamily: "var(--fm)", fontSize: 11, color: "var(--teal)", background: "var(--tealXL)", padding: "6px 8px", borderRadius: 8, marginBottom: 3, lineHeight: 1.4 }}>{l}</div>)}
+            </div>}
+            {Object.keys(ps).length > 0 && <div style={{ background: "var(--card)", border: "1.5px solid var(--borderL)", borderRadius: "var(--r)", padding: "12px 16px", marginBottom: 10, boxShadow: "var(--sh)" }}>
+              <div style={{ fontSize: 9, fontWeight: 800, color: "var(--t4)", textTransform: "uppercase", marginBottom: 6 }}>📅 Your Week</div>
+              {["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"].map(d => {
+                const s = ps[d];
+                return <div key={d} style={{ display: "flex", justifyContent: "space-between", padding: "6px 0", borderBottom: "1px solid var(--borderL)", fontSize: 13 }}>
+                  <span style={{ fontWeight: 600, color: "var(--t2)" }}>{d.slice(0, 3)}</span>
+                  <span style={{ fontFamily: "var(--fm)", fontWeight: 700, color: s ? "var(--teal)" : "var(--t4)" }}>{s ? `${s.start}–${s.end}` : "OFF"}</span>
+                </div>;
+              })}
+              <div style={{ marginTop: 10 }}><BTN c="t" fn={() => applyWeek(ps)}>✓ Apply to Calendar</BTN></div>
+            </div>}
+            {ocrTxt && <details style={{ marginBottom: 10 }}>
+              <summary style={{ fontSize: 11, fontWeight: 700, color: "var(--t3)", cursor: "pointer", padding: "6px 0" }}>Full OCR text</summary>
+              <div style={{ fontFamily: "var(--fm)", fontSize: 9, color: "var(--t2)", background: "var(--bg)", padding: 10, borderRadius: 10, maxHeight: 160, overflow: "auto", whiteSpace: "pre-wrap" }}>{ocrTxt}</div>
+              <BTN c="o" fn={() => { doEx(ocrTxt, nm); toast("Re-extracted"); }}>🔄 Re-extract</BTN>
+            </details>}
+          </div>
+        </div>
+      );
+    }
+
+    function SetScr({ cfg, setCfg, clk, tmins, hist, ct, setCt, setTasks, toast, onClear }) {
+      const [tn, setTn] = useState(""); const [tg, setTg] = useState("HAND"); const [tr, setTr] = useState(false);
+      const up = (k, v) => setCfg(c => { const n = { ...c, [k]: v }; sSet("cfg", n); return n; });
+      const sinp = { width: 120, height: 34, border: "1.5px solid var(--border)", borderRadius: 8, padding: "0 8px", fontSize: 13, fontWeight: 600, color: "var(--t1)", background: "var(--bg)", textAlign: "right" };
+      return (
+        <div style={{ paddingBottom: 24, animation: "fadeUp .3s ease" }}>
+          <PH t="Settings" s="Preferences & data" />
+          <div style={{ padding: "0 20px" }}>
+            <div style={{ textAlign: "center", marginBottom: 14 }}>
+              <div style={{ fontFamily: "var(--fd)", fontSize: 20, color: "var(--teal)", fontWeight: 800 }}>Tracker Made Easy</div>
+              <div style={{ fontSize: 11, color: "var(--t3)" }}>by Vysakh</div>
+            </div>
+            <SS t="👤 Profile">
+              <SR l="Name"><input value={cfg.name || ""} onChange={e => up("name", e.target.value)} style={sinp} /></SR>
+              <SR l="Shift Hours"><input type="number" value={cfg.hours || 8} onChange={e => up("hours", parseInt(e.target.value) || 8)} style={sinp} /></SR>
+              <SR l="Target (AED)"><input type="number" value={cfg.target || 20000} onChange={e => up("target", parseInt(e.target.value) || 20000)} style={sinp} /></SR>
+            </SS>
+            <SS t={`🕒 Records (${clk.length})`}>
+              {!clk.length
+                ? <div style={{ padding: 16, textAlign: "center", color: "var(--t4)", fontSize: 12 }}>None</div>
+                : <div style={{ maxHeight: 200, overflow: "auto" }}>
+                  {clk.slice(0, 20).map(r => <div key={r.id} style={{ display: "flex", justifyContent: "space-between", padding: "6px 16px", fontSize: 11, borderBottom: "1px solid var(--borderL)" }}>
+                    <span style={{ color: "var(--t2)" }}>{r.date}</span>
+                    <span style={{ fontFamily: "var(--fm)", color: "var(--teal)", fontWeight: 700 }}>{r.ci}→{r.co} {r.dur}</span>
+                  </div>)}
+                  <div style={{ padding: "8px 16px", fontSize: 11, fontWeight: 800, color: "var(--teal)", background: "var(--tealXL)" }}>Total: {clk.length} shifts · {Math.floor(tmins / 60)}h {pad2(tmins % 60)}m</div>
+                </div>}
+            </SS>
+            <SS t="✅ Custom Tasks">
+              {ct?.map((t, i) => <div key={i} style={{ display: "flex", alignItems: "center", padding: "8px 16px", borderBottom: "1px solid var(--borderL)", gap: 6, fontSize: 13 }}>
+                <span style={{ flex: 1, fontWeight: 600 }}>{t.name} <span style={{ fontSize: 10, color: "var(--t4)" }}>({t.grp})</span></span>
+                {t.req && <span style={{ fontSize: 9, fontWeight: 800, color: "var(--teal)", background: "var(--tealL)", padding: "1px 6px", borderRadius: 6 }}>R</span>}
+                <button onClick={async () => { const nc = ct.filter((_, j) => j !== i); setCt(nc); setTasks(defaultTasks(nc)); await sSet("ct", nc); toast("Removed"); }} style={{ background: "none", color: "var(--t4)", fontSize: 14, cursor: "pointer" }}>×</button>
+              </div>)}
+              <div style={{ padding: "10px 16px", display: "flex", flexDirection: "column", gap: 6 }}>
+                <input value={tn} onChange={e => setTn(e.target.value)} placeholder="Task name" style={{ height: 36, border: "1.5px solid var(--border)", borderRadius: 10, padding: "0 12px", fontSize: 13, color: "var(--t1)", background: "var(--bg)" }} />
+                <div style={{ display: "flex", gap: 6 }}>
+                  <select value={tg} onChange={e => setTg(e.target.value)} style={{ flex: 1, height: 36, border: "1.5px solid var(--border)", borderRadius: 10, padding: "0 8px", fontSize: 12, background: "var(--bg)", color: "var(--t1)" }}>
+                    <option value="START">START</option><option value="DURING">DURING</option><option value="HAND">HANDOVER</option>
+                  </select>
+                  <label style={{ display: "flex", alignItems: "center", gap: 3, fontSize: 11, fontWeight: 600, color: "var(--t2)" }}><input type="checkbox" checked={tr} onChange={e => setTr(e.target.checked)} />Req</label>
+                  <button onClick={async () => {
+                    if (!tn.trim()) return;
+                    const nc = [...(ct || []), { name: tn, grp: tg, req: tr }];
+                    setCt(nc); setTasks(defaultTasks(nc)); await sSet("ct", nc); setTn(""); toast("✅ Added");
+                  }} style={{ height: 36, padding: "0 14px", background: "var(--teal)", color: "#fff", borderRadius: 10, fontSize: 12, fontWeight: 800, cursor: "pointer" }}>+</button>
+                </div>
+              </div>
+            </SS>
+            <SS t="💾 Data">
+              <SR l="Shifts"><span style={{ fontFamily: "var(--fm)", fontWeight: 700, color: "var(--teal)" }}>{hist.length}</span></SR>
+              <SR l="Hours"><span style={{ fontFamily: "var(--fm)", fontWeight: 700, color: "var(--teal)" }}>{Math.floor(tmins / 60)}h {pad2(tmins % 60)}m</span></SR>
+            </SS>
+            <BTN c="t" fn={() => {
+              const d = JSON.stringify({ hist, clk, cfg, ct }, null, 2);
+              const a = document.createElement("a");
+              a.href = URL.createObjectURL(new Blob([d], { type: "application/json" }));
+              a.download = "tracker-export.json"; a.click(); toast("✅ Exported");
+            }}>📤 Export</BTN>
+            <button onClick={() => { if (confirm("Delete ALL data?")) onClear(); }} style={{ width: "100%", height: 44, background: "transparent", color: "#D94848", border: "2px solid #D94848", borderRadius: 16, fontSize: 13, fontWeight: 800, cursor: "pointer", marginBottom: 6, display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}>🗑 Reset</button>
+          </div>
+        </div>
+      );
+    }
+
+    function SS({ t, children }) {
+      return <div style={{ background: "var(--card)", border: "1.5px solid var(--borderL)", borderRadius: "var(--r)", marginBottom: 10, overflow: "hidden", boxShadow: "var(--sh)" }}>
+        <div style={{ background: "var(--tealXL)", padding: "10px 16px", fontSize: 10, fontWeight: 800, color: "var(--teal)", textTransform: "uppercase", letterSpacing: ".08em" }}>{t}</div>
+        {children}
+      </div>;
+    }
+    function SR({ l, children }) {
+      return <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 16px", borderBottom: "1px solid var(--borderL)" }}>
+        <span style={{ fontSize: 13, fontWeight: 600 }}>{l}</span>{children}
+      </div>;
+    }
+
+    function SumScr({ r, onNew, onBack }) {
+      if (!r) return null;
+      const a = r.as ? fmtT(new Date(r.as)) : "--", b = r.ae ? fmtT(new Date(r.ae)) : "--";
+      let dur = ""; if (r.as && r.ae) { const m = Math.floor((new Date(r.ae) - new Date(r.as)) / 60000); dur = `${Math.floor(m / 60)}h ${pad2(m % 60)}m`; }
+      return (
+        <div style={{ padding: "16px 20px 24px", animation: "fadeUp .3s ease" }}>
+          <div style={{ background: "linear-gradient(140deg,#143D35,var(--teal) 60%,var(--teal2))", borderRadius: "var(--rl)", padding: "26px 22px", color: "#fff", textAlign: "center", marginBottom: 12, boxShadow: "0 8px 32px rgba(26,107,90,.25)" }}>
+            <div style={{ fontSize: 48, marginBottom: 6 }}>✅</div>
+            <div style={{ fontFamily: "var(--fd)", fontSize: 22, fontWeight: 800 }}>Shift Complete!</div>
+            <div style={{ opacity: .8, fontSize: 12 }}>{r.date}</div>
+          </div>
+          <SC t="⏱ Times">
+            <SRw l="Sched" v={`${r.ss || "--"} → ${r.se || "--"}`} />
+            <SRw l="In" v={a} c />
+            <SRw l="Out" v={b} c />
+            {dur && <SRw l="Duration" v={dur} c />}
+          </SC>
+          <SC t="👥 Staff"><div style={{ fontSize: 14, fontWeight: 700 }}>{r.staff?.join(", ") || "—"}</div></SC>
+          <SC t="✅ Tasks">
+            {r.tasks.map((t, i) => <div key={i} style={{ display: "flex", gap: 6, padding: "4px 0", borderBottom: i < r.tasks.length - 1 ? "1px solid var(--borderL)" : "none", fontSize: 12 }}>
+              <span>{t.d ? "✅" : "○"}</span>
+              <span style={{ flex: 1, color: t.d ? "var(--t1)" : "var(--t4)" }}>{t.n}</span>
+              {t.at && <span style={{ color: "var(--t4)", fontSize: 10 }}>{t.at}</span>}
+            </div>)}
+          </SC>
+          {r.notes && <SC t="📝 Notes"><div style={{ fontSize: 13, color: "var(--t2)" }}>{r.notes}</div></SC>}
+          <BTN c="t" fn={() => {
+            const txt = `📋 SHIFT\n${r.date}\n⏰ ${r.ss}→${r.se} (${a}→${b})\n👥 ${r.staff?.join(",") || "—"}\n${r.tasks.map(t => `${t.d ? "✅" : "○"} ${t.n}`).join("\n")}`;
+            navigator.share?.({ title: "Shift", text: txt }).catch(() => navigator.clipboard?.writeText(txt));
+          }}>📤 Share</BTN>
+          <BTN c="o" fn={onNew}>↺ New Shift</BTN>
+          <BTN c="o" fn={onBack}>← History</BTN>
+        </div>
+      );
+    }
+
+    function SC({ t, children }) {
+      return <div style={{ background: "var(--card)", border: "1.5px solid var(--borderL)", borderRadius: 16, padding: 14, marginBottom: 10, boxShadow: "var(--sh)" }}>
+        <div style={{ fontSize: 10, fontWeight: 800, textTransform: "uppercase", color: "var(--t4)", marginBottom: 8 }}>{t}</div>
+        {children}
+      </div>;
+    }
+    function SRw({ l, v, c }) {
+      return <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4, fontSize: 13 }}>
+        <span style={{ color: "var(--t3)" }}>{l}</span>
+        <span style={{ fontWeight: 700, color: c ? "var(--teal)" : "var(--t1)" }}>{v}</span>
+      </div>;
+    }
+
+    // Mount
+    const root = ReactDOM.createRoot(document.getElementById("root"));
+    root.render(React.createElement(App));
+  </script>
+
+  <script>
+    // Service Worker Registration
+    if ("serviceWorker" in navigator) {
+      window.addEventListener("load", () => {
+        navigator.serviceWorker.register("./sw.js")
+          .then(reg => console.log("SW registered:", reg.scope))
+          .catch(err => console.log("SW failed:", err));
+      });
+    }
+
+    // Install prompt
+    let deferredPrompt;
+    window.addEventListener("beforeinstallprompt", e => {
+      e.preventDefault();
+      deferredPrompt = e;
+      const btn = document.getElementById("install-btn");
+      if (btn) { btn.style.display = "flex"; btn.addEventListener("click", () => { deferredPrompt.prompt(); deferredPrompt.userChoice.then(() => { btn.style.display = "none"; deferredPrompt = null; }); }); }
+    });
+  </script>
+</body>
+</html>
